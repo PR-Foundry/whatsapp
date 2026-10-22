@@ -61,14 +61,13 @@ def _receive() -> str:
 	"""Receive incoming webhook events from Meta. Always 200 + Content-Type: text/plain."""
 	payload = frappe.local.form_dict
 
-	settings = frappe.get_single("WA Settings")
-	secret = settings.get("webhook_secret")
-	if secret:
-		try:
-			_verify_signature(secret)
-		except Exception:
-			log("Error", "Webhook", "HMAC signature verification failed", request_data=payload)
-			raise
+	# PR-Foundry/framework#304: fail closed, and write nothing for a refused request. The endpoint is
+	# guest-callable, so an optional secret or a logged failure lets anyone fill WA Log (Meta always
+	# signs with the app secret).
+	secret = frappe.get_single("WA Settings").get("webhook_secret")
+	if not secret:
+		frappe.throw(_("Webhook secret is not configured"), frappe.PermissionError)
+	_verify_signature(secret)
 
 	log("Info", "Webhook", "Webhook payload received", request_data=payload)
 

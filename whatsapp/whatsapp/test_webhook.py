@@ -117,6 +117,46 @@ class TestWebhookNotifications(IntegrationTestCase):
 
 	# -------------------------------------------------------------------------
 	# on_receive
+	def _post(self, body: str, signature: str | None = None) -> None:
+		frappe.local.form_dict = frappe._dict(frappe.parse_json(body))
+		self._bind_request("POST")
+		frappe.local.request.get_data = MagicMock(return_value=body)
+		frappe.local.request.headers = {"X-Hub-Signature-256": signature} if signature else {}
+
+	def _wa_log_count(self) -> int:
+		return frappe.db.count("WA Log")
+
+	# PR-Foundry/framework#304: an unauthenticated POST must be refused before anything is written,
+	# or any anonymous caller can fill WA Log on every site that carries the app.
+	def test_post_without_a_configured_secret_is_refused_and_writes_nothing(self):
+		frappe.db.set_single_value("WA Settings", "webhook_secret", "")
+		before = self._wa_log_count()
+		self._post('{"object": "whatsapp_business_account", "entry": []}')
+
+		with self.assertRaises(frappe.PermissionError):
+			handler()
+		self.assertEqual(self._wa_log_count(), before)
+
+	def test_post_with_a_bad_signature_is_refused_and_writes_nothing(self):
+		frappe.db.set_single_value("WA Settings", "webhook_secret", "s3cret")
+		before = self._wa_log_count()
+		self._post('{"object": "whatsapp_business_account", "entry": []}', signature="sha256=deadbeef")
+
+		with self.assertRaises(frappe.AuthenticationError):
+			handler()
+		self.assertEqual(self._wa_log_count(), before)
+
+	def test_post_with_a_valid_signature_is_accepted(self):
+		import hashlib
+		import hmac
+
+		frappe.db.set_single_value("WA Settings", "webhook_secret", "s3cret")
+		body = '{"object": "whatsapp_business_account", "entry": []}'
+		digest = hmac.new(b"s3cret", body.encode(), hashlib.sha256).hexdigest()
+		self._post(body, signature=f"sha256={digest}")
+
+		self.assertEqual(handler(), "ok")
+
 	# -------------------------------------------------------------------------
 
 	@patch("whatsapp.whatsapp.doctype.wa_message.wa_message.WAMessage.run_notifications")
